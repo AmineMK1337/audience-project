@@ -1,5 +1,6 @@
-##workflow
-<img src="assets/image.png" width="400">
+## workflow
+
+<img src="workflow.png" width="1100">
 
 ## Project Structure
 ```bash
@@ -55,3 +56,4 @@
 │   └── tailwind.config.ts
 ├── .gitignore
 └── README.md                       
+
