@@ -15,14 +15,14 @@ i worked on backend, frontend still empty
 ├── /backend              
 │   ├── /app
 │   │   ├── /agents                 
-│   │   │   ├── __init__.py
-│   │   │   ├── base.py             
-│   │   │   ├── pacing.py          
-│   │   │   ├── grouper.py          
-│   │   │   └── sentiment.py        
+│   │   │   ├── __init__.py           
+│   │   │   ├── pacing_agent.py          
+│   │   │   ├── grouper_agent.py          
+│   │   │   └── sentiment_agent.py      
 │   │   ├── /core
 │   │   │   └── config.py           # env variables
-│   │   ├── /routers                
+│   │   ├── /routers
+│   │   │   ├── __init__.py 
 │   │   │   ├── websocket.py      
 │   │   │   └── reactions.py        
 │   │   ├── /schemas                
@@ -63,6 +63,7 @@ i worked on backend, frontend still empty
 │   └── tailwind.config.ts
 ├── .gitignore
 └── README.md                       
+
 
 
 
