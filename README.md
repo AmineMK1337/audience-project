@@ -1,3 +1,4 @@
+i worked on backend, frontend still empty
 ## 
 <img src="audience.png" width="1100">
 
@@ -62,5 +63,6 @@
 │   └── tailwind.config.ts
 ├── .gitignore
 └── README.md                       
+
 
 
