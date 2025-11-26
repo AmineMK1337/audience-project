@@ -4,196 +4,198 @@ import json
 import asyncio
 from datetime import datetime
 
-from app.schemas.reacts import save_reaction, ReactionType
-from app.schemas.questions import save_question  # Add this import
+from app.schemas.reacts import save_reaction
+from app.schemas.questions import save_question, get_recent_questions
+
+from app.agents.pacing_agent import pacing_agent
+from app.agents.grouper_agent import grouper_agent, get_grouped_questions
 
 router = APIRouter()
 
 class ConnectionManager:
-    """Manages WebSocket connections"""
-    
     def __init__(self):
-        # Store presenter connections (dashboard viewers)
         self.presenter_connections: List[WebSocket] = []
-        # Store audience connections 
         self.audience_connections: List[WebSocket] = []
-    
+        
+        self.reaction_counts = {
+            "speed_up": 0,
+            "slow_down": 0,
+            "im_lost": 0,
+            "show_code": 0
+        }
+        
+        # Add question counter for grouper agent
+        self.question_count = 0
+
     async def connect_presenter(self, websocket: WebSocket):
-        """Connect presenter dashboard"""
         await websocket.accept()
         self.presenter_connections.append(websocket)
-        print(f"Presenter connected. Total: {len(self.presenter_connections)}")
-    
+
     async def connect_audience(self, websocket: WebSocket):
-        """Connect audience member"""
         await websocket.accept()
         self.audience_connections.append(websocket)
-        print(f"Audience member connected. Total: {len(self.audience_connections)}")
-    
+
     def disconnect_presenter(self, websocket: WebSocket):
-        """Disconnect presenter"""
         if websocket in self.presenter_connections:
             self.presenter_connections.remove(websocket)
-            print(f"Presenter disconnected. Remaining: {len(self.presenter_connections)}")
-    
+
     def disconnect_audience(self, websocket: WebSocket):
-        """Disconnect audience member"""
         if websocket in self.audience_connections:
             self.audience_connections.remove(websocket)
-            print(f"Audience disconnected. Remaining: {len(self.audience_connections)}")
-    
+
     async def broadcast_to_presenters(self, message: dict):
-        """Send message to all presenter dashboards"""
-        if not self.presenter_connections:
-            print("No presenters connected to broadcast to")
-            return
-            
-        disconnected = []
         for connection in self.presenter_connections:
             try:
                 await connection.send_text(json.dumps(message))
-            except Exception as e:
-                print(f"Error broadcasting to presenter: {e}")
-                disconnected.append(connection)
-        
-        # Remove dead connections
-        for connection in disconnected:
-            self.disconnect_presenter(connection)
+            except Exception:
+                # If sending fails, assume dead connection and ignore 
+                # (clean up happens on disconnect event)
+                pass
     
-    async def send_to_audience_member(self, websocket: WebSocket, message: dict):
-        """Send message to specific audience member"""
-        try:
-            await websocket.send_text(json.dumps(message))
-        except Exception as e:
-            print(f"Error sending to audience member: {e}")
-            self.disconnect_audience(websocket)
+    def update_stats(self, reaction_type: str):
+        if reaction_type in self.reaction_counts:
+            self.reaction_counts[reaction_type] += 1
 
-# Global connection manager
 manager = ConnectionManager()
 
 @router.websocket("/ws/presenter")
 async def presenter_websocket(websocket: WebSocket):
-    """WebSocket endpoint for presenter dashboard"""
     await manager.connect_presenter(websocket)
     try:
         while True:
-            # Keep connection alive and listen for presenter commands
             data = await websocket.receive_text()
             message = json.loads(data)
             
-            # Handle presenter requests (like requesting latest data)
+            # Handle Heartbeat (Critical for Mobile Presenters)
+            if message.get("type") == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+                continue
+
+            # 2. Handle Stats Request
             if message.get("type") == "get_stats":
-                # You can add real-time stats here
                 await websocket.send_text(json.dumps({
                     "type": "stats_update",
-                    "presenter_count": len(manager.presenter_connections),
-                    "audience_count": len(manager.audience_connections),
-                    "timestamp": datetime.now().isoformat()
+                    "counts": manager.reaction_counts,
+                    "audience": len(manager.audience_connections)
                 }))
-                
+
     except WebSocketDisconnect:
-        print("Presenter disconnected normally")
-        manager.disconnect_presenter(websocket)
-    except Exception as e:
-        print(f"Error in presenter websocket: {e}")
         manager.disconnect_presenter(websocket)
 
 @router.websocket("/ws/audience")
 async def audience_websocket(websocket: WebSocket):
-    """WebSocket endpoint for audience members"""
+    await manager.connect_audience(websocket)
     try:
-        await manager.connect_audience(websocket)
-        
         while True:
-            # Receive messages from audience (reactions, questions)
             data = await websocket.receive_text()
-            print(f"Received from audience: {data}")
             
             try:
                 message = json.loads(data)
-            except json.JSONDecodeError as e:
-                print(f"Invalid JSON received: {e}")
-                await manager.send_to_audience_member(websocket, {
-                    "type": "error",
-                    "message": "Invalid JSON format"
-                })
+            except json.JSONDecodeError:
+                continue 
+
+            # Heartbeat for Mobile Audience 
+            if message.get("type") == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
                 continue
-            
+
             if message.get("type") == "reaction":
-                try:
-                    # Save reaction to database
-                    reaction_id = save_reaction(
-                        name=message.get("name", "Anonymous"),
-                        reaction=message.get("reaction")
-                    )
-                    print(f"Saved reaction with ID: {reaction_id}")
-                    
-                    # Broadcast reaction to all presenters
-                    await manager.broadcast_to_presenters({
-                        "type": "new_reaction",
-                        "id": reaction_id,
-                        "name": message.get("name", "Anonymous"),
-                        "reaction": message.get("reaction"),
-                        "timestamp": datetime.now().isoformat()
-                    })
-                    
-                    # Confirm to the audience member
-                    await manager.send_to_audience_member(websocket, {
-                        "type": "reaction_confirmed",
-                        "id": reaction_id
-                    })
-                    
-                except Exception as e:
-                    print(f"Error saving reaction: {e}")
-                    await manager.send_to_audience_member(websocket, {
-                        "type": "error",
-                        "message": f"Failed to save reaction: {str(e)}"
-                    })
+                r_type = message.get("reaction")
             
-            elif message.get("type") == "question":
-                try:
-                    # Save question to database
-                    question_id = save_question(
-                        name=message.get("name", "Anonymous"),
-                        question=message.get("question")
-                    )
-                    print(f"Saved question with ID: {question_id}")
-                    
-                    # Broadcast question to all presenters
-                    await manager.broadcast_to_presenters({
-                        "type": "new_question",
-                        "id": question_id,
-                        "name": message.get("name", "Anonymous"),
-                        "question": message.get("question"),
-                        "timestamp": datetime.now().isoformat()
-                    })
-                    
-                    # Confirm to audience member
-                    await manager.send_to_audience_member(websocket, {
-                        "type": "question_confirmed",
-                        "id": question_id
-                    })
-                    
-                except Exception as e:
-                    print(f"Error handling question: {e}")
-                    await manager.send_to_audience_member(websocket, {
-                        "type": "error",
-                        "message": f"Failed to save question: {str(e)}"
-                    })
-            else:
-                await manager.send_to_audience_member(websocket, {
-                    "type": "error",
-                    "message": "Unknown message type"
+                manager.update_stats(r_type)
+
+                await manager.broadcast_to_presenters({
+                    "type": "new_reaction",
+                    "reaction": r_type,
+                    "counts": manager.reaction_counts 
                 })
+
+            
+                if r_type in ["im_lost", "slow_down"]:
+                    try:
+                        if hasattr(pacing_agent, 'generate'):
+                            response = pacing_agent.generate(json.dumps(manager.reaction_counts))
+                        elif hasattr(pacing_agent, 'run'):
+                            response = pacing_agent.run(json.dumps(manager.reaction_counts))
+                        elif hasattr(pacing_agent, 'chat'):
+                            response = pacing_agent.chat(json.dumps(manager.reaction_counts))
+                        else:
+                            response = pacing_agent(json.dumps(manager.reaction_counts))
+                        
+                        # Parse the response
+                        response_text = str(response)
+                        cleaned_text = response_text.replace("```json", "").replace("```", "").strip()
+                        ai_response = json.loads(cleaned_text)
+                        
+                        if ai_response.get("status") in ["CRITICAL", "WARNING"]:
+                            await manager.broadcast_to_presenters({
+                                "type": "ai_alert",
+                                "alert": ai_response
+                            })
+                    except Exception as e:
+                        print(f"Pacing Agent failed: {e}")
+
+                # save to db (to_thread to avoid lag)
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        save_reaction, 
+                        name=message.get("name", "Anon"), 
+                        reaction=r_type
+                    )
+                )
+
+            elif message.get("type") == "question":
+                q_text = message.get("question")
                 
+                manager.question_count += 1
+                
+                await manager.broadcast_to_presenters({
+                    "type": "new_question",
+                    "question": q_text,
+                    "name": message.get("name", "Anon")
+                })
+
+                # Save to db (to_thread to avoid lag)
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        save_question, 
+                        name=message.get("name", "Anon"), 
+                        question=q_text
+                    )
+                )
+                
+                # Every 5 questions, trigger grouper agent
+                if manager.question_count % 3 == 0:
+                    asyncio.create_task(process_questions_batch())
+
     except WebSocketDisconnect:
-        print("Audience member disconnected normally")
-        manager.disconnect_audience(websocket)
-    except Exception as e:
-        print(f"Error in audience websocket: {e}")
         manager.disconnect_audience(websocket)
 
-# Utility function to broadcast system messages
-async def broadcast_system_message(message: dict):
-    """Broadcast system-wide messages"""
-    await manager.broadcast_to_presenters(message)
+async def process_questions_batch():
+    """Group recent questions using AI"""
+    try:
+        recent_questions = get_recent_questions(limit=20)
+        
+        if len(recent_questions) >= 3: 
+            # Extract just question text for the grouper
+            question_texts = [q['question'] for q in recent_questions]
+            
+            grouped = await asyncio.to_thread(get_grouped_questions, question_texts)
+            
+            if grouped:
+                await manager.broadcast_to_presenters({
+                    "type": "question_groups",
+                    "groups": grouped
+                })
+                print(f"Grouped {len(recent_questions)} questions into themes")
+        
+    except Exception as e:
+        print(f"Question grouping failed: {e}")
+
+async def periodic_question_grouping():
+    """Run question grouping every 3 minutes"""
+    while True:
+        await asyncio.sleep(180)  # 3 mins
+        await process_questions_batch()
+
+asyncio.create_task(periodic_question_grouping())

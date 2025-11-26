@@ -1,13 +1,20 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+import os
+
 from app.routers import reactions, websocket
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI(title="Audience Feedback API", version="1.0.0")
 
-# CORS middleware for frontend communication
+# CORS middleware
+origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your frontend URL
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
